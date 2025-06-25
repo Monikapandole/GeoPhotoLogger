@@ -1,0 +1,2 @@
+# GeoPhotoLogger
+
