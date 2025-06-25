@@ -20,7 +20,12 @@ import {
   ProgressFilledTrack,
   Heading,
 } from '@gluestack-ui/themed';
-import { launchCamera, launchImageLibrary, ImagePickerResponse, MediaType } from 'react-native-image-picker';
+import {
+  launchCamera,
+  launchImageLibrary,
+  ImagePickerResponse,
+  MediaType,
+} from 'react-native-image-picker';
 import locationService from '../services/location';
 import firebaseService from '../services/firebase';
 import { Location, UploadProgress } from '../types';
@@ -51,27 +56,8 @@ const CameraScreen: React.FC = () => {
       );
     }
   };
-const requestStoragePermission = async (): Promise<boolean> => {
-  if (Platform.OS === 'android') {
-    try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
-        {
-          title: 'Storage Permission',
-          message: 'This app needs access to your gallery to pick images.',
-          buttonNeutral: 'Ask Me Later',
-          buttonNegative: 'Cancel',
-          buttonPositive: 'OK',
-        }
-      );
-      return granted === PermissionsAndroid.RESULTS.GRANTED;
-    } catch (err) {
-      console.warn(err);
-      return false;
-    }
-  }
-  return true;
-};
+
+ 
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
@@ -108,71 +94,38 @@ const requestStoragePermission = async (): Promise<boolean> => {
     }
   };
 
-  // Check if the image file exists using react-native-fs
   const checkFileExists = async (uri: string) => {
-    const filePath = uri.replace('file://', '');  // Remove 'file://' prefix
+    const filePath = uri.replace('file://', '');
     const exists = await RNFS.exists(filePath);
     console.log(`File exists: ${exists}`);
     return exists;
   };
 
-  // SafeImage Component to handle image loading errors
-  const SafeImage = ({ uri }: { uri: any }) => {
-    const [error, setError] = useState(false);
-
-    const handleImageError = (e) => {
-      setError(true);
-      console.error('Error loading image:', e.nativeEvent.error);
-      Alert.alert('Error', 'Failed to load image');
-    };
-
-    return error ? (
-      <View style={styles.imageErrorContainer}>
-        <Text>Failed to load image</Text>
-      </View>
-    ) : (
-      <Image
-        source={{ uri }}
-        style={styles.image}
-        resizeMode="cover"
-        onError={handleImageError}
-      />
-    );
-  };
-
   const handleImagePicker = async (response: ImagePickerResponse) => {
-    console.log("Image Picker Response: ", response);
-
-
-
     if (response.assets && response.assets.length > 0) {
-      const asset = response?.assets[0];
-      console.log("Picked asset: ", asset);
+      const asset = response.assets[0];
+      const imageUri = asset.uri;
 
-      const imageUri = asset?.uri;
-      console.log("Image URI: ", imageUri);
-
-      // Check if the file exists at the URI
       const fileExists = await checkFileExists(imageUri);
-      if (fileExists) {
-        console.log(fileExists ,"imageUri", imageUri)
-        setSelectedImage(imageUri); // Update the selected image
-      } else {
+      if (!fileExists) {
         Alert.alert('Error', 'Image file does not exist.');
+        return;
+      }
+
+      const fileName = `photo_${Date.now()}.jpg`;
+      const permanentPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+
+      try {
+        await RNFS.copyFile(imageUri.replace('file://', ''), permanentPath);
+        setSelectedImage('file://' + permanentPath);
+      } catch (err) {
+        console.error("File copy failed", err);
+        Alert.alert('Error', 'Failed to move image to accessible storage');
+        return;
       }
 
       if (hasLocationPermission) {
         getCurrentLocation();
-      }
-
-      if (response.didCancel) {
-        console.log("User cancelled image picker");
-        return;
-      }
-
-      if (response.errorCode) {
-        Alert.alert('Error', response.errorMessage || 'Failed to pick image');
-        return;
       }
     } else {
       Alert.alert('Error', 'No image selected.');
@@ -196,7 +149,7 @@ const requestStoragePermission = async (): Promise<boolean> => {
     );
   };
 
-  const pickFromGallery = () => {
+  const pickFromGallery = async () => {
     launchImageLibrary(
       {
         mediaType: 'photo' as MediaType,
@@ -206,55 +159,41 @@ const requestStoragePermission = async (): Promise<boolean> => {
     );
   };
 
-const uploadPhoto = async () => {
-  console.log("upload")
-  if (!selectedImage || !currentLocation) {
-    Alert.alert('Error', 'Please select an image and ensure location is available.');
-    return;
-  }
-  try {
-    setIsLoading(true);
-    setUploadProgress({ progress: 0, state: 'uploading' });
-
-    const fileName = `photo_${Date.now()}.jpg`;
-
-    // Ensure to check and handle file path before uploading
-    const fileUri = selectedImage;
-    console.log('File to upload:', fileUri);
-
-    // If the file path is from the cache, consider moving it to a permanent location
-    const isTempFile = fileUri.startsWith('file:///data/user/0/');
-    if (isTempFile) {
-      const permanentFilePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
-      await RNFS.copyFile(fileUri, permanentFilePath);
-      console.log('File copied to:', permanentFilePath);
-      setSelectedImage(permanentFilePath); // Update the selected image URI
+  const uploadPhoto = async () => {
+    if (!selectedImage || !currentLocation) {
+      Alert.alert('Error', 'Please select an image and ensure location is available.');
+      return;
     }
 
-    await firebaseService.uploadPhoto(
-      selectedImage, // Ensure this is the permanent file path if you moved it
-      fileName,
-      {
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        accuracy: currentLocation.accuracy,
-      },
-      (progress) => {
-        setUploadProgress(progress);
-      }
-    );
+    try {
+      setIsLoading(true);
+      setUploadProgress({ progress: 0, state: 'uploading' });
 
-    Alert.alert('Success', 'Photo uploaded successfully!');
-    resetSelection();
-  } catch (error: any) {
-    console.error('Upload error:', error);  // Log the error here
-    setUploadProgress({ progress: 0, state: 'error', error: error.message || 'Upload failed' });
-    Alert.alert('Upload Error', error.message || 'Failed to upload photo. Please try again.');
-  } finally {
-    setIsLoading(false);
-  }
-};
+      const fileName = `photo_${Date.now()}.jpg`;
 
+      await firebaseService.uploadPhoto(
+        selectedImage,
+        fileName,
+        {
+          latitude: currentLocation.latitude,
+          longitude: currentLocation.longitude,
+          accuracy: currentLocation.accuracy,
+        },
+        (progress) => {
+          setUploadProgress(progress);
+        }
+      );
+
+      Alert.alert('Success', 'Photo uploaded successfully!');
+      resetSelection();
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      setUploadProgress({ progress: 0, state: 'error', error: error.message || 'Upload failed' });
+      Alert.alert('Upload Error', error.message || 'Failed to upload photo. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const resetSelection = () => {
     setSelectedImage(null);
@@ -270,7 +209,15 @@ const uploadPhoto = async () => {
         {/* Image Preview */}
         {selectedImage && (
           <Box style={styles.imageContainer}>
-            <SafeImage uri={selectedImage} />
+            <Image
+              source={{ uri: selectedImage }}
+              style={styles.image}
+              resizeMode="cover"
+              onError={(e) => {
+                console.error('Image load error:', e.nativeEvent.error);
+                Alert.alert('Error', 'Failed to load image');
+              }}
+            />
             <Button onPress={resetSelection} style={styles.resetButton}>
               <ButtonText>Reset</ButtonText>
             </Button>
@@ -311,39 +258,29 @@ const uploadPhoto = async () => {
         )}
 
         {/* Actions */}
-        <VStack gap={15} >
+        <VStack gap={15}>
           <HStack justifyContent="space-between" style={styles.buttonRow}>
-            {/* Take Photo Button */}
             <Button onPress={takePhoto} isDisabled={isLoading} style={styles.button}>
               <ButtonText>📸 Take Photo</ButtonText>
             </Button>
 
-            {/* Pick from Gallery Button */}
             <Button onPress={pickFromGallery} isDisabled={isLoading} style={styles.button}>
               <ButtonText>🖼️ Pick from Gallery</ButtonText>
             </Button>
           </HStack>
 
-          {/* Upload Button */}
           {selectedImage && currentLocation && (
-            <Button
-              onPress={uploadPhoto}
-              isDisabled={isLoading}
-              style={styles.uploadButton}
-            >
+            <Button onPress={uploadPhoto} isDisabled={isLoading} style={styles.uploadButton}>
               <ButtonText>{isLoading ? 'Uploading...' : '🚀 Upload to Firebase'}</ButtonText>
             </Button>
           )}
 
-          {/* Location Permission Button */}
           {!hasLocationPermission && (
             <Button onPress={checkPermissions} style={styles.locationButton}>
               <ButtonText>📍 Enable Location</ButtonText>
             </Button>
           )}
         </VStack>
-
-
       </VStack>
     </ScrollView>
   );
@@ -357,21 +294,6 @@ const styles = StyleSheet.create({
   content: {
     flexDirection: 'column',
     alignItems: 'center',
-  },
-  buttonRow: {
-    width: '100%', // Make sure the row spans the full width
-    flexDirection: 'row', // Ensure the buttons are in a horizontal row
-    justifyContent: 'space-between', // Distribute space evenly
-    alignItems: 'center', // Vertically center the buttons
-  },
-  button: {
-    width: '48%', // Each button takes up 48% of the width, leaving some space between them
-  },
-  uploadButton: {
-    marginTop: 20,
-  },
-  locationButton: {
-    marginTop: 20,
   },
   heading: {
     fontSize: 24,
@@ -427,6 +349,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: 'bold',
   },
+  buttonRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   button: {
     width: '48%',
   },
@@ -435,13 +363,6 @@ const styles = StyleSheet.create({
   },
   locationButton: {
     marginTop: 20,
-  },
-  imageErrorContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: 300,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 10,
   },
 });
 
