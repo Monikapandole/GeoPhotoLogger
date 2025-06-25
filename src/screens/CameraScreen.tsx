@@ -51,6 +51,27 @@ const CameraScreen: React.FC = () => {
       );
     }
   };
+const requestStoragePermission = async (): Promise<boolean> => {
+  if (Platform.OS === 'android') {
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
+        {
+          title: 'Storage Permission',
+          message: 'This app needs access to your gallery to pick images.',
+          buttonNeutral: 'Ask Me Later',
+          buttonNegative: 'Cancel',
+          buttonPositive: 'OK',
+        }
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch (err) {
+      console.warn(err);
+      return false;
+    }
+  }
+  return true;
+};
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
@@ -96,7 +117,7 @@ const CameraScreen: React.FC = () => {
   };
 
   // SafeImage Component to handle image loading errors
-  const SafeImage = ({ uri }) => {
+  const SafeImage = ({ uri }: { uri: any }) => {
     const [error, setError] = useState(false);
 
     const handleImageError = (e) => {
@@ -122,26 +143,19 @@ const CameraScreen: React.FC = () => {
   const handleImagePicker = async (response: ImagePickerResponse) => {
     console.log("Image Picker Response: ", response);
 
-    if (response.didCancel) {
-      console.log("User cancelled image picker");
-      return;
-    }
 
-    if (response.errorCode) {
-      Alert.alert('Error', response.errorMessage || 'Failed to pick image');
-      return;
-    }
 
     if (response.assets && response.assets.length > 0) {
-      const asset = response.assets[0];
+      const asset = response?.assets[0];
       console.log("Picked asset: ", asset);
 
-      const imageUri = asset.uri;
+      const imageUri = asset?.uri;
       console.log("Image URI: ", imageUri);
 
       // Check if the file exists at the URI
       const fileExists = await checkFileExists(imageUri);
       if (fileExists) {
+        console.log(fileExists ,"imageUri", imageUri)
         setSelectedImage(imageUri); // Update the selected image
       } else {
         Alert.alert('Error', 'Image file does not exist.');
@@ -149,6 +163,16 @@ const CameraScreen: React.FC = () => {
 
       if (hasLocationPermission) {
         getCurrentLocation();
+      }
+
+      if (response.didCancel) {
+        console.log("User cancelled image picker");
+        return;
+      }
+
+      if (response.errorCode) {
+        Alert.alert('Error', response.errorMessage || 'Failed to pick image');
+        return;
       }
     } else {
       Alert.alert('Error', 'No image selected.');
@@ -182,40 +206,55 @@ const CameraScreen: React.FC = () => {
     );
   };
 
-  const uploadPhoto = async () => {
-    if (!selectedImage || !currentLocation) {
-      Alert.alert('Error', 'Please select an image and ensure location is available.');
-      return;
+const uploadPhoto = async () => {
+  console.log("upload")
+  if (!selectedImage || !currentLocation) {
+    Alert.alert('Error', 'Please select an image and ensure location is available.');
+    return;
+  }
+  try {
+    setIsLoading(true);
+    setUploadProgress({ progress: 0, state: 'uploading' });
+
+    const fileName = `photo_${Date.now()}.jpg`;
+
+    // Ensure to check and handle file path before uploading
+    const fileUri = selectedImage;
+    console.log('File to upload:', fileUri);
+
+    // If the file path is from the cache, consider moving it to a permanent location
+    const isTempFile = fileUri.startsWith('file:///data/user/0/');
+    if (isTempFile) {
+      const permanentFilePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      await RNFS.copyFile(fileUri, permanentFilePath);
+      console.log('File copied to:', permanentFilePath);
+      setSelectedImage(permanentFilePath); // Update the selected image URI
     }
 
-    try {
-      setIsLoading(true);
-      setUploadProgress({ progress: 0, state: 'uploading' });
+    await firebaseService.uploadPhoto(
+      selectedImage, // Ensure this is the permanent file path if you moved it
+      fileName,
+      {
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        accuracy: currentLocation.accuracy,
+      },
+      (progress) => {
+        setUploadProgress(progress);
+      }
+    );
 
-      const fileName = `photo_${Date.now()}.jpg`;
-      await firebaseService.uploadPhoto(
-        selectedImage,
-        fileName,
-        {
-          latitude: currentLocation.latitude,
-          longitude: currentLocation.longitude,
-          accuracy: currentLocation.accuracy,
-        },
-        (progress) => {
-          setUploadProgress(progress);
-        }
-      );
+    Alert.alert('Success', 'Photo uploaded successfully!');
+    resetSelection();
+  } catch (error: any) {
+    console.error('Upload error:', error);  // Log the error here
+    setUploadProgress({ progress: 0, state: 'error', error: error.message || 'Upload failed' });
+    Alert.alert('Upload Error', error.message || 'Failed to upload photo. Please try again.');
+  } finally {
+    setIsLoading(false);
+  }
+};
 
-      Alert.alert('Success', 'Photo uploaded successfully!');
-      resetSelection();
-    } catch (error) {
-      console.error('Upload error:', error);
-      setUploadProgress({ progress: 0, state: 'error', error: 'Upload failed' });
-      Alert.alert('Upload Error', 'Failed to upload photo. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const resetSelection = () => {
     setSelectedImage(null);
@@ -259,8 +298,8 @@ const CameraScreen: React.FC = () => {
               {uploadProgress.state === 'uploading'
                 ? 'Uploading...'
                 : uploadProgress.state === 'success'
-                ? 'Upload Complete!'
-                : 'Upload Failed'}
+                  ? 'Upload Complete!'
+                  : 'Upload Failed'}
             </Text>
             <Progress value={uploadProgress.progress} style={styles.progress}>
               <ProgressFilledTrack />
@@ -272,16 +311,20 @@ const CameraScreen: React.FC = () => {
         )}
 
         {/* Actions */}
-        <VStack gap={15} mt={20}>
-          <HStack justifyContent="space-between">
+        <VStack gap={15} >
+          <HStack justifyContent="space-between" style={styles.buttonRow}>
+            {/* Take Photo Button */}
             <Button onPress={takePhoto} isDisabled={isLoading} style={styles.button}>
               <ButtonText>📸 Take Photo</ButtonText>
             </Button>
+
+            {/* Pick from Gallery Button */}
             <Button onPress={pickFromGallery} isDisabled={isLoading} style={styles.button}>
               <ButtonText>🖼️ Pick from Gallery</ButtonText>
             </Button>
           </HStack>
 
+          {/* Upload Button */}
           {selectedImage && currentLocation && (
             <Button
               onPress={uploadPhoto}
@@ -292,12 +335,15 @@ const CameraScreen: React.FC = () => {
             </Button>
           )}
 
+          {/* Location Permission Button */}
           {!hasLocationPermission && (
             <Button onPress={checkPermissions} style={styles.locationButton}>
               <ButtonText>📍 Enable Location</ButtonText>
             </Button>
           )}
         </VStack>
+
+
       </VStack>
     </ScrollView>
   );
@@ -306,71 +352,96 @@ const CameraScreen: React.FC = () => {
 const styles = StyleSheet.create({
   scrollContainer: {
     paddingVertical: 20,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
   },
   content: {
-    flex: 1,
-    gap: 20,
-  },
-  heading: {
-    fontSize: 26,
-    textAlign: 'center',
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  imageContainer: {
+    flexDirection: 'column',
     alignItems: 'center',
   },
+  buttonRow: {
+    width: '100%', // Make sure the row spans the full width
+    flexDirection: 'row', // Ensure the buttons are in a horizontal row
+    justifyContent: 'space-between', // Distribute space evenly
+    alignItems: 'center', // Vertically center the buttons
+  },
+  button: {
+    width: '48%', // Each button takes up 48% of the width, leaving some space between them
+  },
+  uploadButton: {
+    marginTop: 20,
+  },
+  locationButton: {
+    marginTop: 20,
+  },
+  heading: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  imageContainer: {
+    marginVertical: 20,
+    width: screenWidth - 40,
+    height: 300,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
   image: {
-    width: screenWidth * 0.9,
-    height: screenWidth * 0.9,
-    borderRadius: 12,
+    width: '100%',
+    height: '100%',
   },
   resetButton: {
-    marginTop: 8,
+    position: 'absolute',
+    bottom: 10,
+    left: 10,
   },
   locationContainer: {
-    backgroundColor: '#d9f9e8',
-    padding: 12,
+    padding: 15,
+    backgroundColor: '#f0f0f0',
     borderRadius: 10,
+    marginBottom: 20,
+    width: screenWidth - 40,
   },
   locationText: {
-    textAlign: 'center',
-    fontWeight: '600',
     fontSize: 16,
+    fontWeight: 'bold',
   },
   accuracyText: {
-    textAlign: 'center',
-    fontSize: 13,
-    opacity: 0.7,
-    marginTop: 4,
+    fontSize: 14,
+    color: '#888',
   },
   progressContainer: {
-    marginTop: 10,
+    width: screenWidth - 40,
+    padding: 15,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+    marginBottom: 20,
   },
   progressText: {
+    fontSize: 16,
     textAlign: 'center',
-    marginBottom: 5,
-    fontWeight: '600',
   },
   progress: {
-    height: 8,
-    borderRadius: 4,
+    marginVertical: 10,
   },
   progressPercent: {
     textAlign: 'center',
-    fontSize: 12,
-    marginTop: 4,
+    fontWeight: 'bold',
   },
   button: {
-    flex: 1,
-    marginHorizontal: 5,
+    width: '48%',
   },
   uploadButton: {
-    backgroundColor: '#4CAF50',
+    marginTop: 20,
   },
   locationButton: {
-    marginTop: 10,
+    marginTop: 20,
+  },
+  imageErrorContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: 300,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
   },
 });
 
